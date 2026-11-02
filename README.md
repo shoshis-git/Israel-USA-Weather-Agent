@@ -20,6 +20,11 @@ uv sync
 # התקנת דפדפן עבור Playwright
 uv run playwright install chromium 
 ```
+
+יש ליצור קובץ `.env` בתיקיית הפרויקט עם מפתח ה-API של Anthropic:
+```
+ANTHROPIC_API_KEY=your-api-key
+```
 ### 2. הרצת ה-Host (ממשק הצ'אט)
 כדי להפעיל את ה-Agent ולהתחיל בשאילתות:
 

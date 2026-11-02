@@ -19,19 +19,19 @@ async def make_nws_request(url: str) -> dict[str, Any] | None:
             response = await client.get(url, headers=headers, timeout=30.0)
             response.raise_for_status()
             return response.json()
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception:
+            return None
 
 
 def format_alert(feature: dict) -> str:
-    """Format an alert feature into a readbale string"""
+    """Format an alert feature into a readable string"""
     props = feature["properties"]
     return f"""
 Event: {props.get("event", "Unknown")}
 Area: {props.get("areaDesc","Unknown")}
 Severity:{props.get("severity","Unknown")}
 Description:{props.get("description", "No description available")}
-Instructions:{props.get("instructions", "No specific instructions provided")}
+Instructions:{props.get("instruction") or "No specific instructions provided"}
 """
 
 
@@ -67,21 +67,21 @@ async def get_forecast_in_USA(latitude: float, longitude: float) -> str:
     points_url = f"{NWS_API_BASE}/points/{latitude},{longitude}"
     points_data = await make_nws_request(points_url)
     
-    if not points_data:
+    forecast_url = (points_data or {}).get("properties", {}).get("forecast")
+    if not forecast_url:
         return "Unable to fetch forecast data for this location " + points_url
-    
-    forecast_url = points_data["properties"]["forecast"]
+
     forecast_data = await make_nws_request(forecast_url)
-    
-    if not forecast_data:
+    periods = (forecast_data or {}).get("properties", {}).get("periods")
+
+    if not periods:
         return "Unable to fetch detailed forecast"
-    
-    periods = forecast_data["properties"]["periods"]
+
     forecasts = []
     for period in periods[:5]:
         forecast = f"""
         {period["name"]}:
-        Temperture:{period["temperature"]}°{period["temperatureUnit"]}
+        Temperature:{period["temperature"]}°{period["temperatureUnit"]}
         Wind: {period["windSpeed"]}  {period["windDirection"]}
         Forecast:{period["detailedForecast"]}
         """

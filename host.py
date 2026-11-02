@@ -17,6 +17,8 @@ class ChatHost:
         self.tool_clients: dict[str, tuple[MCPClient, str]] = {}
         self.clients_connected = False
         self.exit_stack = AsyncExitStack()
+        # Conversation history, kept across queries
+        self.messages: list[dict[str, Any]] = []
         # self.anthropic = Anthropic()
         # For Netfree
         transport = httpx.HTTPTransport(verify=False)
@@ -74,14 +76,24 @@ class ChatHost:
 
     async def process_query(self, query: str) -> str:
         """Process a query using Claude and available tools"""
-        messages = [{"role": "user", "content": query}]
+        history_length = len(self.messages)
+        try:
+            return await self._run_query(query)
+        except Exception:
+            # Drop the partial turn so the history stays valid for the next query
+            del self.messages[history_length:]
+            raise
+
+    async def _run_query(self, query: str) -> str:
+        messages = self.messages
+        messages.append({"role": "user", "content": query})
         available_tools = await self.get_available_tools()
         final_text = []
 
         while True:
             response = self.anthropic.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=1000,
+                max_tokens=4096,
                 messages=messages,
                 tools=available_tools
             )
@@ -104,22 +116,34 @@ class ChatHost:
                 tool_name = content.name
                 tool_args = content.input
 
-                if tool_name not in self.tool_clients:
-                    raise RuntimeError(f"Unknown tool requested by model: {tool_name}")
-
-                client, original_tool_name = self.tool_clients[tool_name]
-                if client.session is None:
-                    raise RuntimeError(f"MCP client {client.client_name} is not connected")
-
-                result = await client.session.call_tool(original_tool_name, tool_args)
                 final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
-                tool_results.append(
-                    {
+
+                # Tool failures are reported back to Claude instead of aborting the query
+                try:
+                    if tool_name not in self.tool_clients:
+                        raise RuntimeError(f"Unknown tool requested by model: {tool_name}")
+
+                    client, original_tool_name = self.tool_clients[tool_name]
+                    if client.session is None:
+                        raise RuntimeError(f"MCP client {client.client_name} is not connected")
+
+                    result = await client.session.call_tool(original_tool_name, tool_args)
+                    tool_result = {
                         "type": "tool_result",
                         "tool_use_id": content.id,
                         "content": result.content,
+                        "is_error": bool(result.isError),
                     }
-                )
+                except Exception as e:
+                    final_text.append(f"[Tool {tool_name} failed: {e}]")
+                    tool_result = {
+                        "type": "tool_result",
+                        "tool_use_id": content.id,
+                        "content": f"Tool call failed: {e}",
+                        "is_error": True,
+                    }
+
+                tool_results.append(tool_result)
 
             messages.append({
                 "role": "assistant",
