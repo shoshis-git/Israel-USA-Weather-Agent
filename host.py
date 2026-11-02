@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -9,6 +9,8 @@ from client import MCPClient
 from dotenv import load_dotenv
 
 load_dotenv()
+
+StepCallback = Callable[[dict[str, Any]], None]
 
 
 class ChatHost:
@@ -74,17 +76,25 @@ class ChatHost:
         return available_tools
 
 
-    async def process_query(self, query: str) -> str:
-        """Process a query using Claude and available tools"""
+    async def process_query(self, query: str, on_step: StepCallback | None = None) -> str:
+        """Process a query using Claude and available tools.
+
+        on_step, if given, is called with an event dict for every text block,
+        tool call and tool result as they happen (used by the Gradio UI).
+        """
         history_length = len(self.messages)
         try:
-            return await self._run_query(query)
+            return await self._run_query(query, on_step or (lambda event: None))
         except Exception:
             # Drop the partial turn so the history stays valid for the next query
             del self.messages[history_length:]
             raise
 
-    async def _run_query(self, query: str) -> str:
+    def reset_conversation(self):
+        """Forget the conversation history."""
+        self.messages.clear()
+
+    async def _run_query(self, query: str, on_step: StepCallback) -> str:
         messages = self.messages
         messages.append({"role": "user", "content": query})
         available_tools = await self.get_available_tools()
@@ -107,6 +117,7 @@ class ChatHost:
 
                 if content.type == 'text':
                     final_text.append(content.text)
+                    on_step({"type": "text", "text": content.text})
                     continue
 
                 if content.type != 'tool_use':
@@ -117,6 +128,7 @@ class ChatHost:
                 tool_args = content.input
 
                 final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+                on_step({"type": "tool_call", "id": content.id, "name": tool_name, "args": tool_args})
 
                 # Tool failures are reported back to Claude instead of aborting the query
                 try:
@@ -134,6 +146,7 @@ class ChatHost:
                         "content": result.content,
                         "is_error": bool(result.isError),
                     }
+                    result_text = "\n".join(c.text for c in result.content if c.type == "text")
                 except Exception as e:
                     final_text.append(f"[Tool {tool_name} failed: {e}]")
                     tool_result = {
@@ -142,7 +155,15 @@ class ChatHost:
                         "content": f"Tool call failed: {e}",
                         "is_error": True,
                     }
+                    result_text = f"Tool call failed: {e}"
 
+                on_step({
+                    "type": "tool_result",
+                    "id": content.id,
+                    "name": tool_name,
+                    "text": result_text,
+                    "is_error": tool_result["is_error"],
+                })
                 tool_results.append(tool_result)
 
             messages.append({
